@@ -27,14 +27,28 @@ func init() {
 			ObjectKinds: []string{objectkinds.Any},
 		},
 		Parameters:             params.ParamDescs,
-		ParseAndValidateParams: params.ParseAndValidate,
+		ParseAndValidateParams: params.ParseAndValidateParams,
 		Instantiate: params.WrapInstantiateFunc(func(p params.Params) (check.Func, error) {
+			// Compile the expression once, when the check is loaded. The resulting program is
+			// reused for every linted object instead of being rebuilt per object. A syntax or
+			// type error therefore fails the check (and the whole lint run) even when no object
+			// matches the check's scope.
+			program, err := compile(p.Check)
+			if err != nil {
+				return nil, &check.ExecutionError{Err: err}
+			}
+			p = params.WithProgram(p, program)
 			return func(ctx lintcontext.LintContext, object lintcontext.Object) []diagnostic.Diagnostic {
-				msg, err := evaluate(p.Check, object, ctx.Objects())
+				msg, err := evaluate(p, ctx, object)
 				if err != nil {
-					return []diagnostic.Diagnostic{
-						{Message: fmt.Sprintf("error evaluating CEL check expression: %v", err)},
-					}
+					// A broken expression is not a lint finding. Record it once, naming the
+					// object it failed on, and let the lint runner abort the run instead of
+					// emitting a per-object diagnostic.
+					p.RecordRuntimeError(&check.ExecutionError{
+						ObjectName: object.GetK8sObjectName().String(),
+						Err:        err,
+					})
+					return nil
 				}
 				if msg != "" {
 					return []diagnostic.Diagnostic{
@@ -47,40 +61,55 @@ func init() {
 	})
 }
 
-func evaluate(check string, object lintcontext.Object, objects []lintcontext.Object) (string, error) {
-	// Convert object to map via JSON marshaling/unmarshaling for CEL compatibility
-	// We need to marshal the underlying K8sObject, not the lintcontext.Object
-	objectMap, err := toMap(object.K8sObject)
-	if err != nil {
-		return "", fmt.Errorf("failed to convert object to map: %w", err)
-	}
-
-	// Convert objects to maps via JSON marshaling/unmarshaling
-	objectsMaps := make([]map[string]any, len(objects))
-	for i, obj := range objects {
-		objMap, err := toMap(obj.K8sObject)
-		if err != nil {
-			return "", fmt.Errorf("failed to convert object %s to map: %w", obj.GetK8sObjectName().String(), err)
-		}
-		objectsMaps[i] = objMap
-	}
-
+// compile builds the CEL environment, compiles the given expression and turns it into a
+// reusable program. The available variables ('object' and 'objects') are part of the
+// environment and are therefore identical for every evaluation of the program.
+func compile(expression string) (cel.Program, error) {
 	e, err := cel.NewEnv(
 		cel.Variable("object", cel.MapType(cel.StringType, cel.AnyType)),
 		cel.Variable("objects", cel.ListType(cel.MapType(cel.StringType, cel.AnyType))),
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to create CEL environment: %w", err)
+		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
-	ast, iss := e.Compile(check)
+	ast, iss := e.Compile(expression)
 	if iss.Err() != nil {
-		return "", fmt.Errorf("failed to compile CEL expression: %w", iss.Err())
+		return nil, fmt.Errorf("failed to compile CEL expression: %w", iss.Err())
 	}
-	prg, err := e.Program(ast)
+	program, err := e.Program(ast)
 	if err != nil {
-		return "", fmt.Errorf("failed to create CEL program: %w", err)
+		return nil, fmt.Errorf("failed to create CEL program: %w", err)
 	}
-	out, _, err := prg.Eval(map[string]any{
+	return program, nil
+}
+
+func evaluate(p params.Params, ctx lintcontext.LintContext, object lintcontext.Object) (string, error) {
+	// Convert the current object to a map via JSON marshaling/unmarshaling for CEL
+	// compatibility. We need to marshal the underlying K8sObject, not the lintcontext.Object.
+	objectMap, err := toMap(object.K8sObject)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert object to map: %w", err)
+	}
+
+	// The 'objects' list is identical for every object of a given lint context, so its map
+	// representation is computed once per context and reused (the compiled expression itself
+	// is already reused across all objects).
+	objects := ctx.Objects()
+	key := params.ObjectsKey(objects)
+	objectsMaps, cached := p.CachedObjectsMaps(key)
+	if !cached {
+		objectsMaps = make([]map[string]any, len(objects))
+		for i, obj := range objects {
+			objMap, err := toMap(obj.K8sObject)
+			if err != nil {
+				return "", fmt.Errorf("failed to convert object %s to map: %w", obj.GetK8sObjectName().String(), err)
+			}
+			objectsMaps[i] = objMap
+		}
+		p.CacheObjectsMaps(key, objectsMaps)
+	}
+
+	out, _, err := p.Program().Eval(map[string]any{
 		"object":  objectMap,
 		"objects": objectsMaps,
 	})

@@ -1,0 +1,13 @@
+checks:
+  addAllBuiltIn: false
+customChecks:
+  - name: "cel-missing-field"
+    description: "references a field some objects do not have"
+    remediation: "guard with has()"
+    scope:
+      objectKinds:
+        - DeploymentLike
+    template: "cel-expression"
+    params:
+      check: |
+        object.spec.replicas > 1 ? "replicas above one" : ""

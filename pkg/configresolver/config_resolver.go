@@ -1,10 +1,13 @@
 package configresolver
 
 import (
+	"errors"
+
 	"golang.stackrox.io/kube-linter/internal/defaultchecks"
 	"golang.stackrox.io/kube-linter/internal/errorhelpers"
 	"golang.stackrox.io/kube-linter/internal/set"
 	"golang.stackrox.io/kube-linter/pkg/builtinchecks"
+	checkpkg "golang.stackrox.io/kube-linter/pkg/check"
 	"golang.stackrox.io/kube-linter/pkg/checkregistry"
 	"golang.stackrox.io/kube-linter/pkg/config"
 	"golang.stackrox.io/kube-linter/pkg/pathutil"
@@ -15,6 +18,13 @@ func LoadCustomChecksInto(cfg *config.Config, checkRegistry checkregistry.CheckR
 	errorList := errorhelpers.NewErrorList("check registration")
 	for i, check := range cfg.CustomChecks {
 		if err := checkRegistry.Register(&cfg.CustomChecks[i]); err != nil {
+			// A fatal check failure (e.g. a broken CEL expression) must retain its type so the
+			// runner can fail the whole lint run with a distinct exit code, rather than being
+			// flattened into an opaque error-list string.
+			var execErr *checkpkg.ExecutionError
+			if errors.As(err, &execErr) {
+				return err
+			}
 			errorList.AddWrapf(err, "failed to register custom check %s", check.Name)
 		}
 	}

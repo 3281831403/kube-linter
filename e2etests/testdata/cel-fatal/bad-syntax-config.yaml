@@ -1,0 +1,13 @@
+checks:
+  addAllBuiltIn: false
+customChecks:
+  - name: "cel-broken-syntax"
+    description: "broken expression"
+    remediation: "fix it"
+    scope:
+      objectKinds:
+        - DeploymentLike
+    template: "cel-expression"
+    params:
+      check: |
+        object.spec.replicas >>>> 1 ? "bad" : ""

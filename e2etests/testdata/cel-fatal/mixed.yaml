@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: has-replicas
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: "x"
+  template:
+    metadata:
+      labels:
+        app: "x"
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.25
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: missing-replicas
+spec:
+  selector:
+    matchLabels:
+      app: "y"
+  template:
+    metadata:
+      labels:
+        app: "y"
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.25

@@ -1,8 +1,10 @@
 package checkregistry
 
 import (
+	"errors"
 	"fmt"
 
+	"golang.stackrox.io/kube-linter/pkg/check"
 	"golang.stackrox.io/kube-linter/pkg/config"
 	"golang.stackrox.io/kube-linter/pkg/instantiatedcheck"
 )
@@ -21,6 +23,15 @@ func (cr checkRegistry) Register(checks ...*config.Check) error {
 	for _, c := range checks {
 		instantiated, err := instantiatedcheck.ValidateAndInstantiate(c)
 		if err != nil {
+			// Fatal execution errors keep their type so the runner can recognize them, but
+			// carry the check's name since registration is where it is known.
+			var execErr *check.ExecutionError
+			if errors.As(err, &execErr) {
+				if execErr.CheckName == "" {
+					execErr.CheckName = c.Name
+				}
+				return execErr
+			}
 			return fmt.Errorf("invalid check %s: %w", c.Name, err)
 		}
 		if _, ok := cr[instantiated.Spec.Name]; ok {

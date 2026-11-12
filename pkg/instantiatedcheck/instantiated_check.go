@@ -1,6 +1,7 @@
 package instantiatedcheck
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -16,6 +17,11 @@ import (
 type InstantiatedCheck struct {
 	Func    check.Func
 	Matcher objectkinds.Matcher
+
+	// FatalError, if non-nil, returns a fatal error (expected to wrap check.ExecutionError)
+	// collected while running Func across objects. It is implemented by checks whose failures
+	// invalidate the whole lint run rather than producing a diagnostic per object.
+	FatalError func() error
 
 	Spec config.Check
 }
@@ -63,8 +69,21 @@ func ValidateAndInstantiate(c *config.Check) (*InstantiatedCheck, error) {
 	i.Matcher = matcher
 	checkFunc, err := template.Instantiate(params)
 	if err != nil {
+		// Preserve fatal execution errors (e.g. a CEL expression that fails to compile) as a
+		// recognizable type so they can fail the whole run with a distinct exit code, even
+		// when no object matches the check's scope.
+		var execErr *check.ExecutionError
+		if errors.As(err, &execErr) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("instantiating check: %w", err)
 	}
 	i.Func = checkFunc
+	// Checks that can fail fatally (independently of the diagnostics they emit) expose their
+	// collected error through check.FatalErrorProvider. Wire it up when the parsed parameters
+	// implement it; ordinary check templates are unaffected.
+	if fatalErrorProvider, ok := params.(check.FatalErrorProvider); ok {
+		i.FatalError = fatalErrorProvider.FatalError
+	}
 	return i, nil
 }

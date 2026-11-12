@@ -1,10 +1,12 @@
 package run
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"golang.stackrox.io/kube-linter/internal/version"
+	checkpkg "golang.stackrox.io/kube-linter/pkg/check"
 	"golang.stackrox.io/kube-linter/pkg/checkregistry"
 	"golang.stackrox.io/kube-linter/pkg/config"
 	"golang.stackrox.io/kube-linter/pkg/diagnostic"
@@ -61,6 +63,22 @@ func Run(lintCtxs []lintcontext.LintContext, registry checkregistry.CheckRegistr
 					continue
 				}
 				diagnostics := check.Func(lintCtx, obj)
+				if check.FatalError != nil {
+					if err := check.FatalError(); err != nil {
+						// A fatal check failure (e.g. a broken CEL expression) invalidates the
+						// whole lint run: it is not a lint finding, so it must not be counted in
+						// result.Reports. Name the check that failed and abort immediately.
+						var execErr *checkpkg.ExecutionError
+						if errors.As(err, &execErr) {
+							execErr.CheckName = check.Spec.Name
+							return Result{}, execErr
+						}
+						return Result{}, &checkpkg.ExecutionError{
+							CheckName: check.Spec.Name,
+							Err:       err,
+						}
+					}
+				}
 				for _, d := range diagnostics {
 					result.Reports = append(result.Reports, diagnostic.WithContext{
 						Diagnostic:  d,

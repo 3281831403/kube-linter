@@ -1,0 +1,13 @@
+checks:
+  addAllBuiltIn: false
+customChecks:
+  - name: "cel-pod-label"
+    description: "pods must carry team label"
+    remediation: "add team label"
+    scope:
+      objectKinds:
+        - Pod
+    template: "cel-expression"
+    params:
+      check: |
+        !has(object.metadata.labels.team) ? "missing team label" : ""
